@@ -900,3 +900,150 @@ func isValidValue(rank string, value int) bool {
 	}
 	return value == expectedValue
 }
+
+// ***********************************************************
+// ***************** BroadCast Messages **********************
+// ***********************************************************
+
+// broadcastGameOver notifies all players that the game is over
+func broadcastGameOver(room *game.Room, winner string) {
+	for _, player := range room.Players {
+		player.Conn.WriteJSON(game.WSResponse{
+			Type: "game_over",
+			Payload: map[string]interface{}{
+				"winner": winner,
+				"scores": room.Game.Scores,
+			},
+		})
+	}
+}
+
+// broadcastGameUpdate sends the updated game state to all players in the room
+func broadcastGameUpdate(room *game.Room) {
+	game.Manager.Mu.RLock()
+	defer game.Manager.Mu.RUnlock()
+	for _, recipient := range room.Players {
+		// Create filtered player list
+		filteredPlayers := make([]*game.Player, len(room.Game.Players))
+
+		for i, p := range room.Game.Players {
+			playerCopy := *p
+			if p.ID != recipient.ID {
+				playerCopy.Hand = nil // Will be omitted in JSON
+			}
+			filteredPlayers[i] = &playerCopy
+		}
+		// Add just the trump player ID
+		payload := map[string]interface{}{
+			"game": map[string]interface{}{
+				"players":            filteredPlayers,
+				"trump_player_id":    room.Game.TrumpPlayer.ID,
+				"trump_suit":         room.Game.TrumpSuit,
+				"current_trick":      room.Game.CurrentTrick,
+				"scores":             room.Game.Scores,
+				"current_player_idx": room.Game.CurrentPlayerIndex,
+			},
+		}
+
+		recipient.Conn.WriteJSON(game.WSResponse{
+			Type:    "game_update",
+			Payload: payload,
+		})
+	}
+}
+
+func broadcastGameStateAfterReplacement(room *game.Room, _ *game.Player) {
+	for _, player := range room.Players {
+		player.Conn.WriteJSON(game.WSResponse{
+			Type: "game_state_update",
+			Payload: map[string]interface{}{
+				// "player":             newPlayer.Hand,
+				"current_player_idx": room.Game.CurrentPlayerIndex,
+				"trump_suit":         room.Game.TrumpSuit,
+				"current_trick":      room.Game.CurrentTrick,
+				"scores":             room.Game.Scores,
+			},
+		})
+	}
+}
+
+func broadcastReplacementNotification(player *game.Player, room *game.Room) {
+	for _, p := range room.Players {
+		p.Conn.WriteJSON(game.WSResponse{
+			Type: MessagePlayerReplaced,
+			Payload: map[string]interface{}{
+				"old_player_id": player.ID,
+				"new_player_id": player.ID,
+				"index":         player.Index,
+			},
+		})
+	}
+}
+
+func broadcastConnectionStatus(player *game.Player, isConnected bool) {
+	for _, room := range game.Manager.Rooms {
+		for _, p := range room.Players {
+			if p.ID == player.ID {
+				msgType := MessagePlayerDisconnected
+				if isConnected {
+					msgType = MessagePlayerReconnected
+				}
+
+				for _, recipient := range room.Players {
+					if recipient.ID != player.ID {
+						recipient.Conn.WriteJSON(game.WSResponse{
+							Type: msgType,
+							Payload: map[string]interface{}{
+								"player_id": player.ID,
+								"connected": isConnected,
+							},
+						})
+					}
+				}
+				return
+			}
+		}
+	}
+}
+
+func broadcastLeaveNotification(player *game.Player, room *game.Room) {
+	for _, p := range room.Players {
+		if p.Connected {
+			p.Conn.WriteJSON(game.WSResponse{
+				Type: MessagePlayerLeft,
+				Payload: map[string]interface{}{
+					"player_id":         player.ID,
+					"needs_replacement": true,
+					"message":           "Game is paused waiting for a replacement.",
+				},
+			})
+		}
+	}
+}
+
+func broadcastTurnUpdate(room *game.Room) {
+	currentPlayer := room.Game.Players[room.Game.CurrentPlayerIndex]
+	for _, player := range room.Players {
+		player.Conn.WriteJSON(game.WSResponse{
+			Type: "turn_update",
+			Payload: map[string]interface{}{
+				"current_player": currentPlayer.ID,
+			},
+		})
+	}
+}
+
+func broadcastRoundWinner(room *game.Room, winner string, points int, trumpTeam string) {
+	for _, player := range room.Players {
+		player.Conn.WriteJSON(game.WSResponse{
+			Type: "round_winner",
+			Payload: map[string]interface{}{
+				"winner":         winner,
+				"points_awarded": points,
+				"trump_team":     trumpTeam,
+				"round_scores":   room.Game.RoundScores,
+				"current_round":  room.Game.CurrentRound,
+			},
+		})
+	}
+}
