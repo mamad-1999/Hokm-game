@@ -405,3 +405,60 @@ func handlePlayerLeave(player *game.Player, room *game.Room) {
 	// Notify other players
 	broadcastLeaveNotification(player, room)
 }
+
+// **************************************************************
+// ************************ Room Handler ************************
+// **************************************************************
+
+func sendGameState(player *game.Player) {
+	room := findPlayerRoom(player)
+	if room == nil {
+		return
+	}
+
+	// Create personalized game state
+	personalizedState := map[string]interface{}{
+		"trump_suit":     room.Game.TrumpSuit,
+		"scores":         room.Game.Scores,
+		"round_scores":   room.Game.RoundScores,
+		"current_trick":  room.Game.CurrentTrick,
+		"your_hand":      player.Hand,
+		"teams":          getTeamInfo(room),
+		"current_player": room.Game.Players[room.Game.CurrentPlayerIndex].ID,
+	}
+
+	player.Conn.WriteJSON(game.WSResponse{
+		Type:    MessageGameState,
+		Payload: personalizedState,
+	})
+}
+
+func getTeamInfo(room *game.Room) map[string][]string {
+	teams := make(map[string][]string)
+	for _, p := range room.Players {
+		teams[p.Team] = append(teams[p.Team], p.ID)
+	}
+	return teams
+}
+
+// findPlayerRoom finds the room that the player is in
+func findPlayerRoom(player *game.Player) *game.Room {
+	game.Manager.Mu.RLock()
+	defer game.Manager.Mu.RUnlock()
+
+	for _, room := range game.Manager.Rooms {
+		// Check active players
+		for _, p := range room.Players {
+			if p.ID == player.ID {
+				return room
+			}
+		}
+		// Check saved players
+		if room.SavedPlayers != nil {
+			if _, ok := room.SavedPlayers[player.ID]; ok {
+				return room
+			}
+		}
+	}
+	return nil
+}
