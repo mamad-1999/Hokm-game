@@ -462,3 +462,309 @@ func findPlayerRoom(player *game.Player) *game.Room {
 	}
 	return nil
 }
+
+// *****************************************************************
+// ************************* Handle Message ************************
+// *****************************************************************
+
+// processMessage processes incoming WebSocket messages
+func processMessage(player *game.Player, msg game.WSMessage) {
+	if !player.Connected {
+		log.Println("Message from disconnected player")
+		return
+	}
+
+	// Find the room the player is in
+	room := findPlayerRoom(player)
+	if room == nil {
+		log.Println("Player is not in any room")
+		return
+	}
+
+	// Block all game actions if paused
+	if room.Game.IsGameOver && msg.Action != "reconnect" {
+		player.Conn.WriteJSON(game.WSResponse{
+			Type: "game_paused",
+			Payload: map[string]interface{}{
+				"message": "Waiting for player replacement. Game paused.",
+			},
+		})
+		return
+	}
+
+	// Handle the message based on the action
+	switch msg.Action {
+	case "play_card":
+		// Handle playing a card
+		cardData, ok := msg.Data.(map[string]interface{})
+		if !ok {
+			log.Println("Invalid card data")
+			return
+		}
+
+		// Validate card details
+		suit, ok := cardData["Suit"].(string)
+		if !ok || !isValidSuit(suit) {
+			log.Println("Invalid suit")
+			return
+		}
+
+		rank, ok := cardData["Rank"].(string)
+		if !ok || !isValidRank(rank) {
+			log.Println("Invalid rank")
+			return
+		}
+
+		value, ok := cardData["Value"].(float64)
+		if !ok {
+			log.Println("Invalid value type")
+			return
+		}
+		intValue := int(value)
+
+		if !isValidValue(rank, intValue) {
+			log.Println("Invalid value for rank")
+			return
+		}
+
+		card := game.Card{
+			Suit:  suit,
+			Rank:  rank,
+			Value: intValue,
+		}
+
+		log.Println("Playing card:", card)
+
+		// Add to current trick
+		if err := room.Game.PlayCard(player.ID, card); err != nil {
+			log.Println("Error playing card:", err)
+			return
+		}
+
+		// Remove from hand
+		for i, c := range player.Hand {
+			if c.Suit == card.Suit && c.Rank == card.Rank {
+				player.Hand = append(player.Hand[:i], player.Hand[i+1:]...)
+				break
+			}
+		}
+		log.Printf("Player %s's updated hand: %v\n", player.Name, player.Hand)
+
+		// Only broadcast if trick is NOT complete
+		if len(room.Game.CurrentTrick) < len(room.Players) {
+			broadcastGameUpdate(room)
+			broadcastTurnUpdate(room)
+		}
+
+		// Check if trick completed
+		if len(room.Game.CurrentTrick) == len(room.Players) {
+			winnerID := room.Game.DetermineTrickWinner(room.Players)
+			log.Println("Trick winner:", winnerID)
+
+			var winningTeam string
+			for _, p := range room.Players {
+				if p.ID == winnerID {
+					winningTeam = p.Team
+					break
+				}
+			}
+
+			if winningTeam == "" {
+				log.Println("Could not determine winning team")
+				return
+			}
+
+			room.Game.UpdateScores(winningTeam, 1)
+			log.Printf("Updated scores: %+v\n", room.Game.Scores)
+
+			// Inside the "play_card" case, replace the Round winner determination block with:
+			// Check if the Round is over (7 tricks won by a team)
+			if room.Game.Scores["team1"] >= 2 || room.Game.Scores["team2"] >= 2 {
+				// Determine teams
+				trumpTeam := room.Game.TrumpPlayer.Team
+				oppositeTeam := getOppositeTeam(trumpTeam)
+
+				var roundWinner string
+				var roundPoints int
+				var losingScore int
+
+				// Determine which team won the Round
+				if room.Game.Scores["team1"] >= 2 {
+					roundWinner = "team1"
+					losingScore = room.Game.Scores["team2"]
+				} else {
+					roundWinner = "team2"
+					losingScore = room.Game.Scores["team1"]
+				}
+
+				// Determine points based on Hokm rules
+				switch {
+				case losingScore == 0 && roundWinner == trumpTeam:
+					// Kot: Trump team won 7-0
+					roundPoints = 2
+					log.Printf("KOT! Trump team (%s) won 7-0. Awarding 2 points", trumpTeam)
+				case losingScore == 0 && roundWinner == oppositeTeam:
+					// Trump Kot: Opposite team won 7-0 against Trump team
+					roundPoints = 3
+					log.Printf("TRUMP KOT! Opposite team (%s) won 7-0. Awarding 3 points", oppositeTeam)
+				default:
+					// Regular win (any score other than 7-0)
+					roundPoints = 1
+					log.Printf("Regular win. Awarding 1 point to %s", roundWinner)
+				}
+
+				// Update Round scores
+				room.Game.RoundScores[roundWinner] += roundPoints
+
+				// Broadcast Round winner with points and Trump team info
+				broadcastRoundWinner(room, roundWinner, roundPoints, trumpTeam)
+
+				// Check if the game is over (7 Rounds won by a team)
+				if room.Game.RoundScores["team1"] >= 7 || room.Game.RoundScores["team2"] >= 7 {
+					// Determine the game winner
+					var gameWinner string
+					if room.Game.RoundScores["team1"] >= 7 {
+						gameWinner = "team1"
+					} else {
+						gameWinner = "team2"
+					}
+
+					// Broadcast game over
+					broadcastGameOver(room, gameWinner)
+					room.Game.IsGameOver = true
+					return
+				}
+
+				// Restart the game for the next Round
+				restartGameForNextRound(room, roundWinner)
+				room.Game.ResetTrick()
+			} else {
+				// Update current player to trick winner
+				for i, p := range room.Players {
+					if p.ID == winnerID {
+						room.Game.CurrentPlayerIndex = i
+						break
+					}
+				}
+
+				room.Game.ResetTrick()
+
+				// Final broadcast with cleaned state
+				broadcastGameUpdate(room)
+				broadcastTurnUpdate(room)
+			}
+		}
+
+	case "choose_trump":
+		// Handle choosing a trump suit
+		trumpSuit, ok := msg.Data.(string)
+		if !ok {
+			log.Println("Invalid trump suit data")
+			return
+		}
+
+		// Validate that the player is the Trump Player
+		if player.ID != room.Game.TrumpPlayer.ID {
+			log.Println("Only the Trump Player can choose the trump suit")
+			return
+		}
+
+		// Set the Trump Suit
+		room.Game.TrumpSuit = trumpSuit
+		log.Printf("Trump suit chosen: %s\n", trumpSuit)
+
+		// Broadcast the chosen Trump Suit to all players
+		for _, p := range room.Players {
+			p.Conn.WriteJSON(game.WSResponse{
+				Type: "trump_suit_selected",
+				Payload: map[string]interface{}{
+					"trump_suit": trumpSuit,
+				},
+			})
+		}
+
+		// Step 1: Clear all players' hands except the Trump Player's initial 5 cards
+		for _, p := range room.Players {
+			if p.ID != room.Game.TrumpPlayer.ID {
+				p.Hand = []game.Card{}
+			}
+		}
+
+		// Step 2: Deal 5 cards to each of the other 3 players
+		log.Printf("Deck length before dealing 5 cards to other players: %d\n", len(room.Game.Deck))
+		for _, p := range room.Players {
+			if p.ID != room.Game.TrumpPlayer.ID {
+				cards := dealCards(room.Game.Deck, 5)
+				p.Hand = append(p.Hand, cards...)
+				room.Game.Deck = room.Game.Deck[5:]
+
+				// Broadcast the first batch of 5 cards to the player
+				p.Conn.WriteJSON(game.WSResponse{
+					Type: "deal_cards_batch_1",
+					Payload: map[string]interface{}{
+						"cards": cards,
+					},
+				})
+			}
+		}
+		log.Printf("Deck length after dealing 5 cards to other players: %d\n", len(room.Game.Deck))
+
+		// Add a 1-second delay before the next batch
+		time.Sleep(1 * time.Second)
+
+		// Step 3: Deal 4 cards to all 4 players (including the Trump Player)
+		log.Printf("Deck length before dealing 4 cards to all players: %d\n", len(room.Game.Deck))
+		for _, p := range room.Players {
+			cards := dealCards(room.Game.Deck, 4)
+			p.Hand = append(p.Hand, cards...)
+			room.Game.Deck = room.Game.Deck[4:]
+
+			// Broadcast the second batch of 4 cards to the player
+			p.Conn.WriteJSON(game.WSResponse{
+				Type: "deal_cards_batch_2",
+				Payload: map[string]interface{}{
+					"cards": cards,
+				},
+			})
+		}
+		log.Printf("Deck length after dealing 4 cards to all players: %d\n", len(room.Game.Deck))
+
+		// Add a 1-second delay before the next batch
+		time.Sleep(1 * time.Second)
+
+		// Step 4: Deal another 4 cards to all 4 players (including the Trump Player)
+		log.Printf("Deck length before dealing another 4 cards to all players: %d\n", len(room.Game.Deck))
+		for _, p := range room.Players {
+			cards := dealCards(room.Game.Deck, 4)
+			p.Hand = append(p.Hand, cards...)
+			room.Game.Deck = room.Game.Deck[4:]
+
+			// Broadcast the third batch of 4 cards to the player
+			p.Conn.WriteJSON(game.WSResponse{
+				Type: "deal_cards_batch_3",
+				Payload: map[string]interface{}{
+					"cards": cards,
+				},
+			})
+		}
+		log.Printf("Deck length after dealing another 4 cards to all players: %d\n", len(room.Game.Deck))
+
+		// Log the hands of all players
+		for _, p := range room.Players {
+			log.Printf("Player %s (%s) hand: %v\n", p.Name, p.Team, p.Hand)
+		}
+
+		// Broadcast the updated game state
+		broadcastGameUpdate(room)
+
+		// Start the game with the Trump Player
+		room.Game.CurrentPlayerIndex = indexOfPlayer(room.Players, room.Game.TrumpPlayer)
+		broadcastTurnUpdate(room)
+		// Add to processMessage switch case
+	case "leave_game":
+		handlePlayerLeave(player, room)
+	default:
+		// Handle unknown actions
+		log.Println("Unknown action:", msg.Action)
+	}
+}
