@@ -768,3 +768,135 @@ func processMessage(player *game.Player, msg game.WSMessage) {
 		log.Println("Unknown action:", msg.Action)
 	}
 }
+
+// *********************************************************
+// ****************** Restart Logic ************************
+// *********************************************************
+
+func restartGameForNextRound(room *game.Room, roundWinner string) {
+	fmt.Println("Reset The Round...")
+	// Increment the Round number
+	room.Game.CurrentRound++
+
+	// Reset scores for the new Round (only reset Scores, not RoundScores)
+	room.Game.Scores = make(map[string]int)
+
+	// Reset the deck and shuffle
+	room.Game.Deck = utils.NewDeck()
+	room.Game.Deck = utils.ShuffleDeck(room.Game.Deck)
+
+	// Clear all players' hands
+	for _, player := range room.Players {
+		player.Hand = []game.Card{}
+	}
+
+	// Determine the new Trump Player if necessary
+	trumpTeam := room.Game.TrumpPlayer.Team
+	oppositeTeam := getOppositeTeam(trumpTeam)
+
+	// Rotate Trump Player ONLY if the current Round was won by the opposite team
+	if roundWinner == oppositeTeam {
+		currentTrumpIndex := indexOfPlayer(room.Players, room.Game.TrumpPlayer)
+		nextTrumpIndex := (currentTrumpIndex + 1) % len(room.Players)
+		room.Game.TrumpPlayer = room.Players[nextTrumpIndex]
+
+		log.Printf("Current Trump Player: %s, Team: %s", room.Game.TrumpPlayer.ID, room.Game.TrumpPlayer.Team)
+		log.Printf("Opposite Team: %s", oppositeTeam)
+		log.Printf("Current Trump Index: %d", currentTrumpIndex)
+		log.Printf("Next Trump Index: %d", nextTrumpIndex)
+
+		// Broadcast the new Trump Player
+		for _, p := range room.Players {
+			p.Conn.WriteJSON(game.WSResponse{
+				Type: "trump_player_selected",
+				Payload: map[string]interface{}{
+					"trump_player_id": room.Game.TrumpPlayer.ID,
+				},
+			})
+		}
+	}
+
+	// Deal cards for the next Round (skip Ace selection)
+	var err error
+	room.Players, room.Game.Deck, room.Game.TrumpPlayer, err = utils.DealCards(room.Game.Deck, room.Players, false, room.Game.TrumpPlayer)
+	if err != nil {
+		log.Println("Error dealing cards:", err)
+		return
+	}
+
+	// Notify the Trump Player to choose the Trump Suit
+	room.Game.TrumpPlayer.Conn.WriteJSON(game.WSResponse{
+		Type: "choose_trump",
+		Payload: map[string]interface{}{
+			"cards": room.Game.TrumpPlayer.Hand[:5], // First 5 cards for choosing the Trump Suit
+		},
+	})
+
+	// Broadcast the new game state
+	// broadcastGameUpdate(room)
+
+	// Start the game with the Trump Player
+	room.Game.CurrentPlayerIndex = indexOfPlayer(room.Players, room.Game.TrumpPlayer)
+	broadcastTurnUpdate(room)
+}
+
+// Helper function to get the opposite team
+func getOppositeTeam(team string) string {
+	if team == "team1" {
+		return "team2"
+	}
+	return "team1"
+}
+
+// ********************************************************
+// ********************** Utils ***************************
+// ********************************************************
+
+// Helper function to deal a specific number of cards from the deck
+func dealCards(deck []game.Card, num int) []game.Card {
+	if len(deck) < num {
+		return nil
+	}
+	return deck[:num]
+}
+
+func indexOfPlayer(players []*game.Player, player *game.Player) int {
+	for i, p := range players {
+		if p.ID == player.ID {
+			return i
+		}
+	}
+	return -1
+}
+
+func isValidSuit(suit string) bool {
+	validSuits := []string{"hearts", "diamonds", "clubs", "spades"}
+	for _, s := range validSuits {
+		if s == suit {
+			return true
+		}
+	}
+	return false
+}
+
+func isValidRank(rank string) bool {
+	validRanks := []string{"2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"}
+	for _, r := range validRanks {
+		if r == rank {
+			return true
+		}
+	}
+	return false
+}
+
+func isValidValue(rank string, value int) bool {
+	rankValues := map[string]int{
+		"2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9, "10": 10,
+		"J": 11, "Q": 12, "K": 13, "A": 14,
+	}
+	expectedValue, ok := rankValues[rank]
+	if !ok {
+		return false
+	}
+	return value == expectedValue
+}
