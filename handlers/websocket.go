@@ -1,9 +1,12 @@
 package handlers
 
 import (
+	"fmt"
 	"hokm-backend/game"
+	"hokm-backend/utils"
 	"log"
 	"net/http"
+	"sort"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -57,4 +60,110 @@ func HandleWebSocket(c *gin.Context) {
 		// Process the message
 		processMessage(player, msg)
 	}
+}
+
+func initializeGame(room *game.Room) {
+	// Create and shuffle deck
+	deck := utils.NewDeck()
+	deck = utils.ShuffleDeck(deck)
+	room.Game.Deck = deck
+
+	// Deal cards
+	var err error
+	room.Players, room.Game.Deck, room.Game.TrumpPlayer, err = utils.DealCards(
+		deck, room.Players, true, nil)
+
+	if err != nil {
+		log.Println("Error dealing cards:", err)
+		return
+	}
+
+	room.Game.TrumpPlayer.Conn.WriteJSON(game.WSResponse{
+		Type: "choose_trump",
+		Payload: map[string]interface{}{
+			"cards": room.Game.TrumpPlayer.Hand[:5], // First 5 cards for choosing the Trump Suit
+		},
+	})
+
+	// Notify players about trump player
+	// broadcastTrumpPlayer(room)
+}
+
+// ****************************************************************
+// *********************** Replace Logic **************************
+// ****************************************************************
+
+// In handlers/websocket.go - findReplacementSpot()
+func findReplacementSpot() (*game.Room, *game.SavedPlayerData) {
+	game.Manager.Mu.RLock()
+	defer game.Manager.Mu.RUnlock()
+
+	// First pass: Find any saved player with their room ID
+	for _, room := range game.Manager.Rooms {
+		for _, data := range room.SavedPlayers {
+			if data.IsLeaving {
+				// Return the room where the saved player belongs
+				return game.Manager.Rooms[data.RoomID], data
+			}
+		}
+	}
+	return nil, nil
+}
+
+func handleReplacement(room *game.Room, savedData *game.SavedPlayerData, conn *websocket.Conn) *game.Player {
+
+	if room.ID != savedData.RoomID {
+		log.Printf("Mismatched room ID during replacement")
+		return nil
+	}
+
+	game.Manager.Mu.Lock()
+	defer game.Manager.Mu.Unlock()
+
+	// Create new player with saved data
+	playerCounter++
+	newPlayer := &game.Player{
+		ID:        savedData.PlayerID, // Maintain same ID
+		Name:      fmt.Sprintf("Player%d", playerCounter),
+		Team:      savedData.Team,
+		Hand:      savedData.Hand,
+		Conn:      conn,
+		Connected: true,
+		Index:     savedData.Index,
+	}
+
+	// Add to room
+	room.Players = append(room.Players, newPlayer)
+
+	// Sort players to maintain order
+	sort.Slice(room.Players, func(i, j int) bool {
+		return room.Players[i].Index < room.Players[j].Index
+	})
+
+	// Update game references
+	for i, p := range room.Game.Players {
+		if p.ID == savedData.PlayerID {
+			room.Game.Players[i] = newPlayer
+			break
+		}
+	}
+
+	// Remove from saved players
+	delete(room.SavedPlayers, savedData.PlayerID)
+
+	// Resume game if enough players
+	if len(room.Players) == 4 {
+		room.Game.IsGameOver = false
+
+		// Notify all players about the new turn order
+		broadcastTurnUpdate(room)
+	}
+
+	// Notify all players about the replacement
+	broadcastReplacementNotification(newPlayer, room)
+
+	// Broadcast the updated game state
+	broadcastGameStateAfterReplacement(room, newPlayer)
+
+	return newPlayer
 }
