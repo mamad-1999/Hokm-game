@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -166,4 +167,96 @@ func handleReplacement(room *game.Room, savedData *game.SavedPlayerData, conn *w
 	broadcastGameStateAfterReplacement(room, newPlayer)
 
 	return newPlayer
+}
+
+// *****************************************************
+// ******************** Register ***********************
+// *****************************************************
+
+func registerPlayer(conn *websocket.Conn) *game.Player {
+	conn.WriteJSON(game.WSResponse{
+		Type:    "connection_ack",
+		Payload: map[string]interface{}{"status": "connecting"},
+	})
+
+	room, savedData := findReplacementSpot()
+	if room != nil && savedData != nil {
+		return handleReplacement(room, savedData, conn)
+	}
+
+	// First check for existing disconnected player
+	existingPlayer := findExistingPlayer(conn)
+	if existingPlayer != nil {
+		return handleReconnectingPlayer(existingPlayer, conn)
+	}
+
+	// Create new player with proper locking
+	game.Manager.Mu.Lock()
+	defer game.Manager.Mu.Unlock()
+
+	// Generate player ID and name
+	playerCounter++
+	playerID := strconv.Itoa(playerCounter)
+
+	// Get or create room with available slot
+	room = getAvailableRoom()
+
+	// Determine team based on original player order
+	team := determineTeam(len(room.Players))
+
+	// Create new player with preserved index
+	newPlayer := &game.Player{
+		ID:        playerID,
+		Name:      fmt.Sprintf("Player%d", playerCounter),
+		Team:      team,
+		Conn:      conn,
+		Hand:      []game.Card{},
+		Connected: true,
+		Index:     len(room.Players), // Preserve position in original order
+	}
+
+	// Add to room and game
+	room.Players = append(room.Players, newPlayer)
+	room.Game.Players = append(room.Game.Players, newPlayer)
+
+	// Send initial join message
+	sendJoinMessage(newPlayer, room)
+
+	// Start game if room is full
+	if len(room.Players) == 4 {
+		initializeGame(room)
+	}
+
+	return newPlayer
+}
+
+// Helper functions
+func findExistingPlayer(conn *websocket.Conn) *game.Player {
+	game.Manager.Mu.RLock()
+	defer game.Manager.Mu.RUnlock()
+
+	// Simple IP-based session (replace with proper session management)
+	incomingIP := conn.RemoteAddr().String()
+
+	for _, room := range game.Manager.Rooms {
+		for _, p := range room.Players {
+			if !p.Connected && p.Conn != nil && p.Conn.RemoteAddr().String() == incomingIP {
+				return p
+			}
+		}
+	}
+	return nil
+}
+
+func unregisterPlayer(player *game.Player) {
+	player.Connected = false
+	broadcastConnectionStatus(player, false)
+
+	// Only remove if disconnected for too long
+	go func() {
+		time.Sleep(ReconnectTimeout)
+		if !player.Connected {
+			removePlayerPermanently(player)
+		}
+	}()
 }
