@@ -260,3 +260,148 @@ func unregisterPlayer(player *game.Player) {
 		}
 	}()
 }
+
+// **************************************************************
+// *********************** Connection ***************************
+// **************************************************************
+
+func handleReconnectingPlayer(player *game.Player, conn *websocket.Conn) *game.Player {
+	game.Manager.Mu.Lock()
+	defer game.Manager.Mu.Unlock()
+
+	// Update connection and status
+	player.Conn = conn
+	player.Connected = true
+
+	// Find and update player in room
+	for _, room := range game.Manager.Rooms {
+		for i, p := range room.Players {
+			if p.ID == player.ID {
+				room.Players[i] = player
+				// Update game players reference
+				for j, gp := range room.Game.Players {
+					if gp.ID == player.ID {
+						room.Game.Players[j] = player
+						break
+					}
+				}
+				sendReconnectNotifications(player, room)
+				return player
+			}
+		}
+	}
+	return nil
+}
+
+// Modify getAvailableRoom to create rooms without deadlock
+func getAvailableRoom() *game.Room {
+
+	for _, room := range game.Manager.Rooms {
+		if len(room.SavedPlayers) > 0 && len(room.Players) < 4 {
+			return room
+		}
+	}
+	// Find first non-full, non-ended game room
+	for _, room := range game.Manager.Rooms {
+		if len(room.Players) < 4 && !room.Game.IsGameOver {
+			return room
+		}
+	}
+	// Create new room if none available
+	roomID := game.GenerateRoomID()
+	room := &game.Room{
+		ID:      roomID,
+		Players: []*game.Player{},
+		Game:    game.NewGame(),
+	}
+	game.Manager.Rooms[roomID] = room
+	return room
+}
+
+func determineTeam(playerCount int) string {
+	// Preserve original team assignment logic
+	if playerCount%2 == 0 {
+		return "team2"
+	}
+	return "team1"
+}
+
+func sendJoinMessage(player *game.Player, room *game.Room) {
+	response := game.WSResponse{
+		Type: "join_room",
+		Payload: map[string]interface{}{
+			"room_id": room.ID,
+			"players": room.Players,
+			"your_id": player.ID,
+		},
+	}
+	if err := player.Conn.WriteJSON(response); err != nil {
+		log.Printf("🚨 Error sending join_room to %s: %v", player.ID, err)
+	} else {
+		log.Printf("✅ Sent join_room to %s in room %s", player.ID, room.ID)
+	}
+}
+
+func sendReconnectNotifications(player *game.Player, room *game.Room) {
+	// Send full game state to reconnected player
+	sendGameState(player)
+
+	// Notify others about reconnection
+	for _, p := range room.Players {
+		if p.ID != player.ID && p.Connected {
+			p.Conn.WriteJSON(game.WSResponse{
+				Type: MessagePlayerReconnected,
+				Payload: map[string]interface{}{
+					"player_id": player.ID,
+					"position":  player.Index,
+				},
+			})
+		}
+	}
+}
+
+func removePlayerPermanently(player *game.Player) {
+	for _, room := range game.Manager.Rooms {
+		for i, p := range room.Players {
+			if p.ID == player.ID {
+				room.Players = append(room.Players[:i], room.Players[i+1:]...)
+				broadcastGameUpdate(room)
+				break
+			}
+		}
+	}
+}
+
+func handlePlayerLeave(player *game.Player, room *game.Room) {
+	game.Manager.Mu.Lock()
+	defer game.Manager.Mu.Unlock()
+
+	// Save player state
+	if room.SavedPlayers == nil {
+		room.SavedPlayers = make(map[string]*game.SavedPlayerData)
+	}
+
+	// In handlers/websocket.go - handlePlayerLeave()
+	room.SavedPlayers[player.ID] = &game.SavedPlayerData{
+		PlayerID:  player.ID,
+		Hand:      player.Hand,
+		Team:      player.Team,
+		Index:     player.Index,
+		IsLeaving: true,
+		RoomID:    room.ID, // Track the room
+	}
+
+	// Remove from active players
+	for i, p := range room.Players {
+		if p.ID == player.ID {
+			room.Players = append(room.Players[:i], room.Players[i+1:]...)
+			break
+		}
+	}
+
+	// Pause the game
+	room.Game.IsGameOver = true
+
+	// Notify other players
+	broadcastLeaveNotification(player, room)
+}
