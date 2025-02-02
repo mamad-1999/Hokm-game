@@ -110,12 +110,3 @@ Contributions are welcome! Please fork the repository and create a pull request 
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## Acknowledgments
-
-- Special thanks to the Go community for providing excellent libraries and tools.
-- Inspiration from traditional Hokm card game rules.
-
----
-
-This README provides a comprehensive overview of the Hokm Backend project, including setup instructions, project structure, and key features. Adjust the content as needed to better fit your project's specifics.
