@@ -7,6 +7,9 @@
 
 Hokm Backend is a Go-based server application designed to manage the backend logic for a multiplayer card game called Hokm. The application provides a RESTful API for user authentication and a WebSocket-based real-time game management system. It supports user registration, login, game room creation, card dealing, trick management, and real-time player interactions.
 
+![2025-02-03_10-46_waifu2x_photo_noise2_scale](https://github.com/user-attachments/assets/447bf228-da1a-44b6-88e8-c0a90ccf5844)
+
+
 ## Features ♥️
 
 - **User Authentication**: Register and login with secure password hashing.
