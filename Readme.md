@@ -1,4 +1,4 @@
-# Hokm Backend ♠️♥️♣️♦️
+# Hokm Backend
 
 ![istockphoto-1037693148-612x612](https://github.com/user-attachments/assets/037bf4a5-d5ac-4090-a7e7-9fd421d7e2cd)
 
