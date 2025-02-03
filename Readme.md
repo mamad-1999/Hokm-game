@@ -1,10 +1,10 @@
-# Hokm Backend
+# Hokm Backend ♠️♥️♣️♦️
 
-## Overview
+## Overview ♠️
 
 Hokm Backend is a Go-based server application designed to manage the backend logic for a multiplayer card game called Hokm. The application provides a RESTful API for user authentication and a WebSocket-based real-time game management system. It supports user registration, login, game room creation, card dealing, trick management, and real-time player interactions.
 
-## Features
+## Features ♥️
 
 - **User Authentication**: Register and login with secure password hashing.
 - **Game Management**: Create and manage game rooms with up to 4 players.
@@ -14,7 +14,7 @@ Hokm Backend is a Go-based server application designed to manage the backend log
 - **Player Replacement**: Handle player disconnections and replacements seamlessly.
 - **Game State Persistence**: Save and restore game state for disconnected players.
 
-## Project Structure
+## Project Structure ♣️
 
 ```
 hokm-backend/
@@ -38,7 +38,7 @@ hokm-backend/
 └── README.md             # Project documentation
 ```
 
-## Getting Started
+## Getting Started ♦️
 
 ### Prerequisites
 
@@ -46,7 +46,7 @@ hokm-backend/
 - PostgreSQL database
 - Environment variables configured in `.env` file
 
-### Installation
+### Installation ♠️
 
 1. Clone the repository:
 
@@ -82,20 +82,20 @@ hokm-backend/
    go run main.go
    ```
 
-### API Endpoints
+### API Endpoints ♥️
 
 - **POST /register**: Register a new user.
 - **POST /login**: Authenticate a user.
 - **GET /ws**: Establish a WebSocket connection for real-time game updates.
 
-### WebSocket Messages
+### WebSocket Messages ♣️
 
 - **join_room**: Join a game room.
 - **play_card**: Play a card in the current trick.
 - **choose_trump**: Choose the trump suit.
 - **leave_game**: Leave the current game.
 
-## Dependencies
+## Dependencies ♦️
 
 - **Gin**: HTTP web framework.
 - **GORM**: ORM for database management.
@@ -103,10 +103,10 @@ hokm-backend/
 - **Gorilla WebSocket**: WebSocket implementation.
 - **JWT**: JSON Web Tokens for authentication.
 
-## Contributing
+## Contributing ♠️
 
 Contributions are welcome! Please fork the repository and create a pull request with your changes.
 
-## License
+## License ♥️
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
